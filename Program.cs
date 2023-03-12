@@ -75,6 +75,7 @@ namespace ListReferencesInCsFile
                 {
                     if (!dependenciesFound.ContainsKey(GetSymbolKey(symbol)))
                     {
+                        // Find source trees related to a symbol
                         var nextSyntaxTrees = symbol.Locations
                             .Where(e => e.IsInSource)
                             .Select(e => e.SourceTree)
@@ -82,6 +83,7 @@ namespace ListReferencesInCsFile
                             .OfType<SyntaxTree>()
                             .ToList();
 
+                        // Add them to queue for processing
                         foreach (var nextSyntaxTree in nextSyntaxTrees)
                         {
                             if (!syntaxTreesProcessed.Contains(nextSyntaxTree))
