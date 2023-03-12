@@ -10,38 +10,56 @@ namespace ListReferencesInCsFile
 {
     class Program
     {
+
+        public static IEnumerable<FileInfo> FindCSharpFiles(string folderPath)
+        {
+            DirectoryInfo directory = new DirectoryInfo(folderPath);
+            FileInfo[] files = directory.GetFiles("*.cs", SearchOption.AllDirectories);
+            return files;
+        }
+
         static void Main(string[] args)
         {
             // Parse the C# code into a SyntaxTree
-            string code = File.ReadAllText(@"D:\Dev\Ninject\src\Ninject\IKernel.cs");
-            SyntaxTree tree = CSharpSyntaxTree.ParseText(code);
+
+            var syntaxTrees = FindCSharpFiles(@"D:\Dev\Ninject\src")
+                .Select(file => CSharpSyntaxTree.ParseText(File.ReadAllText(file.FullName), path: file.FullName))
+                .ToList();
 
             // Create a Compilation object with references to the required assemblies
-            Compilation compilation = CSharpCompilation.Create("MyCompilation",
-                syntaxTrees: new[] { tree },
+            var compilation = CSharpCompilation.Create("MyCompilation",
+                syntaxTrees: syntaxTrees,
                 references: new[]
                 {
                     MetadataReference.CreateFromFile(typeof(object).Assembly.Location), // mscorlib
                     MetadataReference.CreateFromFile(typeof(Console).Assembly.Location), // System.Console
-                    MetadataReference.CreateFromFile(typeof(Ninject.IKernel).Assembly.Location) // Ninject.IKernel
                 });
 
+            var tree = syntaxTrees.First(tree => tree.FilePath.EndsWith("\\KernelBase.cs"));
+            
             // Get the semantic model for the SyntaxTree
-            SemanticModel semanticModel = compilation.GetSemanticModel(tree);
+            var semanticModel = compilation.GetSemanticModel(tree);
 
-            // Traverse the SyntaxTree and find all the class references
-            List<(SimpleNameSyntax Node, SymbolInfo SymbolInfo)> classReferences = tree.GetRoot()
+            // Traverse the SyntaxTree and find all the class references that are in source
+            var typeReferences = tree.GetRoot()
                 .DescendantNodes()
                 .OfType<SimpleNameSyntax>()
-                .Select(node => (Node: node, SymbolInfo: semanticModel.GetSymbolInfo(node)))
-                .Where(tuple => tuple.SymbolInfo.Symbol?.Kind == SymbolKind.NamedType)
-                .ToList();
+                .Select(e => semanticModel.GetSymbolInfo(e))
+                .Where(e => e.Symbol?.Kind == SymbolKind.NamedType)
+                .ToHashSet();
+
+            var typeReferencesInSource = typeReferences
+                .Where(e => e.Symbol.Locations.Any(e => e.IsInSource))
+                .ToHashSet();
+
+            var typeReferencesNotInSource = typeReferences
+                .Where(e => e.Symbol.Locations.Any(e => !e.IsInSource))
+                .ToHashSet();
 
             // Print the names of the classes that are referenced
-            foreach (var classReference in classReferences)
+            foreach (var name in typeReferences.Select(e => e.Symbol.ToString()).OrderBy(e => e))
             {
-                var symbol = classReference.SymbolInfo.Symbol;
-                Console.WriteLine(symbol.ToString());
+                Console.WriteLine(name);
             }
 
         }
