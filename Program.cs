@@ -20,48 +20,94 @@ namespace ListReferencesInCsFile
 
         static void Main(string[] args)
         {
-            // Parse the C# code into a SyntaxTree
+            // Project path
+            var projectPath = @"D:\Dev\Ninject\src";
 
-            var syntaxTrees = FindCSharpFiles(@"D:\Dev\Ninject\src")
+            // Entry class
+            var className = "IActivationBlock";
+
+            // Parse the C# code of all files in the project into SyntaxTrees
+            var allFilesSyntaxTrees = FindCSharpFiles(projectPath)
                 .Select(file => CSharpSyntaxTree.ParseText(File.ReadAllText(file.FullName), path: file.FullName))
                 .ToList();
 
             // Create a Compilation object with references to the required assemblies
             var compilation = CSharpCompilation.Create("MyCompilation",
-                syntaxTrees: syntaxTrees,
+                syntaxTrees: allFilesSyntaxTrees,
                 references: new[]
                 {
                     MetadataReference.CreateFromFile(typeof(object).Assembly.Location), // mscorlib
                     MetadataReference.CreateFromFile(typeof(Console).Assembly.Location), // System.Console
                 });
 
-            var tree = syntaxTrees.First(tree => tree.FilePath.EndsWith("\\KernelBase.cs"));
+            var syntaxTreesProcessed = new HashSet<SyntaxTree>();
+
+            // Find all source trees related to the class
+            var syntaxTreesToProcess = new Queue<SyntaxTree>(
+                compilation.GetSymbolsWithName(className)
+                    .OfType<INamedTypeSymbol>()
+                    .SelectMany(e => e.Locations)
+                    .Select(e => e.SourceTree)
+                    .Where(e => e != null)
+                    .OfType<SyntaxTree>());
             
-            // Get the semantic model for the SyntaxTree
-            var semanticModel = compilation.GetSemanticModel(tree);
+            // Will contain all direct and indirect dependencies of the class
+            var dependenciesFound = new Dictionary<string, INamedTypeSymbol>();
 
-            // Traverse the SyntaxTree and find all the class references that are in source
-            var typeReferences = tree.GetRoot()
-                .DescendantNodes()
-                .OfType<SimpleNameSyntax>()
-                .Select(e => semanticModel.GetSymbolInfo(e))
-                .Where(e => e.Symbol?.Kind == SymbolKind.NamedType)
-                .ToHashSet();
+            while (syntaxTreesToProcess.Any())
+            {
+                var currSyntaxTree = syntaxTreesToProcess.Dequeue();
 
-            var typeReferencesInSource = typeReferences
-                .Where(e => e.Symbol.Locations.Any(e => e.IsInSource))
-                .ToHashSet();
+                // Get the semantic model for the SyntaxTree
+                var semanticModel = compilation.GetSemanticModel(currSyntaxTree);
 
-            var typeReferencesNotInSource = typeReferences
-                .Where(e => e.Symbol.Locations.Any(e => !e.IsInSource))
-                .ToHashSet();
+                // Traverse the SyntaxTree and find all the class references that are in source
+                var symbols = currSyntaxTree.GetRoot()
+                    .DescendantNodes()
+                    .OfType<SimpleNameSyntax>()
+                    .Select(e => semanticModel.GetSymbolInfo(e))
+                    .Select(e => e.Symbol)
+                    .OfType<INamedTypeSymbol>()
+                    .Select(e => e.IsGenericType ? e.ConstructUnboundGenericType() : e)
+                    .ToList();
 
+                foreach (var symbol in symbols)
+                {
+                    if (!dependenciesFound.ContainsKey(GetSymbolKey(symbol)))
+                    {
+                        var nextSyntaxTrees = symbol.Locations
+                            .Where(e => e.IsInSource)
+                            .Select(e => e.SourceTree)
+                            .Where(e => e != null)
+                            .OfType<SyntaxTree>()
+                            .ToList();
+
+                        foreach (var nextSyntaxTree in nextSyntaxTrees)
+                        {
+                            if (!syntaxTreesProcessed.Contains(nextSyntaxTree))
+                            {
+                                syntaxTreesToProcess.Enqueue(nextSyntaxTree);
+                            }
+                        }
+
+                        dependenciesFound[GetSymbolKey(symbol)] = symbol;
+                    }
+                }
+
+                syntaxTreesProcessed.Add(currSyntaxTree);
+            }
+            
             // Print the names of the classes that are referenced
-            foreach (var name in typeReferences.Select(e => e.Symbol.ToString()).OrderBy(e => e))
+            foreach (var name in dependenciesFound.Keys.OrderBy(e => e))
             {
                 Console.WriteLine(name);
             }
 
+        }
+
+        private static string GetSymbolKey(INamedTypeSymbol symbol)
+        {
+            return symbol.ToString();
         }
     }
 }
